@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search, ShoppingCart, Plus, Minus, Trash2, X, Star, Package,
   Users, ClipboardList, LogIn, UserPlus, Shield, ChevronRight,
   CheckCircle, Clock, AlertCircle, Edit3, PlusCircle, Menu, XCircle
 } from 'lucide-react';
-import { mockCards as initialCards, mockOrders, mockPlayers as initialPlayers } from './data';
+import { mockOrders, mockPlayers as initialPlayers } from './data';
+import { supabase } from './lib/supabase';
 
 // ─── Playability Stars ───────────────────────────────────
 function PlayabilityStars({ score }) {
@@ -59,9 +60,67 @@ function StatusBadge({ status }) {
 export default function App() {
   const [view, setView] = useState('landing');
   const [cart, setCart] = useState([]);
-  const [cards, setCards] = useState(initialCards);
+  const [cards, setCards] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [players, setPlayers] = useState(initialPlayers);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    async function fetchCards() {
+      try {
+        // 1. Haal de kaarten op, inclusief de gekoppelde sets
+        const { data, error } = await supabase
+          .from('cards')
+          .select(`
+            id,
+            name,
+            type,
+            stock,
+            image_url,
+            playability,
+            card_sets (
+              sets (
+                name
+              )
+            )
+          `);
+
+        if (error) {
+          console.error("Fout bij ophalen van kaarten:", error.message);
+          return;
+        }
+
+        if (data) {
+          // 2. Vorm de data om naar het formaat dat je React app verwacht
+          const formattedCards = data.map(card => {
+            // Haal de set-namen uit de geneste structuur
+            const setNames = card.card_sets
+              ? card.card_sets.map(cs => cs.sets.name)
+              : [];
+
+            return {
+              id: card.id,
+              name: card.name,
+              type: card.type,
+              stock: card.stock,
+              imageUrl: card.image_url, // Zet snake_case om naar camelCase
+              playability: card.playability,
+              set: setNames // array van strings, bijv: ["Obsidian Flames", "Paldean Fates"]
+            };
+          });
+
+          // 3. Sla de geformatteerde kaarten op in de state
+          setCards(formattedCards);
+        }
+      } catch (err) {
+        console.error("Onverwachte fout:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchCards();
+  }, []);
 
   // Cart helpers
   const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
