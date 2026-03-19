@@ -4,3 +4,4 @@
 .venv
 _dist_
 node_modules
+backup
