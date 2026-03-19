@@ -118,8 +118,37 @@ export default function App() {
         setIsLoading(false);
       }
     }
+    async function fetchPlayers() {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*');
+
+        if (error) {
+          console.error("Fout bij ophalen van spelers:", error.message);
+          return;
+        }
+
+        if (data) {
+          // Vorm de profiles om naar het formaat dat je app verwacht
+          const formattedPlayers = data.map(profile => ({
+            id: profile.id,
+            // Voeg voor- en achternaam samen
+            name: `${profile.first_name} ${profile.last_name}`.trim(),
+            email: profile.email,
+            // Jouw app verwacht 'Active' of 'Waitlist'
+            status: profile.status
+          }));
+
+          setPlayers(formattedPlayers);
+        }
+      } catch (err) {
+        console.error("Onverwachte fout bij spelers:", err);
+      }
+    }
 
     fetchCards();
+    fetchPlayers()
   }, []);
 
   // Cart helpers
@@ -158,7 +187,7 @@ export default function App() {
 
   // Accept a waitlist player
   function acceptPlayer(playerId) {
-    setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, status: 'Active' } : p));
+    setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, status: 'accepted' } : p));
   }
 
   const navItems = [
@@ -738,7 +767,7 @@ function AdminDashboard({ cards, setCards, players, acceptPlayer }) {
   const [activeTab, setActiveTab] = useState('inventory');
 
   const pendingOrders = mockOrders.filter(o => o.status !== 'Completed').length;
-  const waitlistPlayers = players.filter(p => p.status === 'Waitlist').length;
+  const waitlistPlayers = players.filter(p => p.status === 'waitlisted').length;
 
   const tabs = [
     { key: 'inventory', label: 'Inventaris', icon: Package },
@@ -969,18 +998,104 @@ function AdminInventory({ cards, setCards }) {
     setModalOpen(true);
   }
 
-  function handleSave(formData) {
-    if (editingCard) {
-      // Update existing card
-      setCards(prev => prev.map(c =>
-        c.id === editingCard.id ? { ...c, ...formData } : c
-      ));
-    } else {
-      // Create new card
-      setCards(prev => [...prev, { id: Date.now(), ...formData }]);
+  async function handleSave(formData) {
+    try {
+      let currentCardId = editingCard?.id;
+
+      // 1. Bereid de kaart data voor (let op snake_case voor Supabase!)
+      const cardPayload = {
+        name: formData.name,
+        type: formData.type,
+        stock: Number(formData.stock),
+        image_url: formData.imageUrl,
+        playability: Number(formData.playability)
+      };
+
+      // --- DEEL A: KAART OPSLAAN ---
+      if (editingCard) {
+        // Update bestaande kaart
+        const { error: updateError } = await supabase
+          .from('cards')
+          .update(cardPayload)
+          .eq('id', currentCardId);
+
+        if (updateError) throw updateError;
+      } else {
+        // Nieuwe kaart toevoegen
+        const { data: newCard, error: insertError } = await supabase
+          .from('cards')
+          .insert([cardPayload])
+          .select()
+          .single(); // We hebben het gegenereerde ID nodig!
+
+        if (insertError) throw insertError;
+        currentCardId = newCard.id;
+      }
+
+      // --- DEEL B: SETS KOPPELEN ---
+      // Verwijder eerst eventuele oude links als we aan het bewerken zijn
+      if (editingCard) {
+        await supabase.from('card_sets').delete().eq('card_id', currentCardId);
+      }
+
+      // formData.set is al een array (bijv. ['Obsidian Flames']), dankzij jouw CardFormModal!
+      for (const setName of formData.set) {
+        // Bestaat deze set al?
+        let { data: existingSet } = await supabase
+          .from('sets')
+          .select('id')
+          .eq('name', setName)
+          .single();
+
+        let setId;
+
+        if (existingSet) {
+          setId = existingSet.id; // Ja, gebruik bestaand ID
+        } else {
+          // Nee, maak een nieuwe set aan
+          const { data: newSet, error: setError } = await supabase
+            .from('sets')
+            .insert([{ name: setName }])
+            .select()
+            .single();
+
+          if (setError) throw setError;
+          setId = newSet.id;
+        }
+
+        // Maak de link in de tussentabel
+        const { error: linkError } = await supabase
+          .from('card_sets')
+          .insert([{ card_id: currentCardId, set_id: setId }]);
+
+        if (linkError) throw linkError;
+      }
+
+      // --- DEEL C: LOKALE UI UPDATEN ---
+      const newLocalCard = {
+        id: currentCardId,
+        name: formData.name,
+        type: formData.type,
+        stock: Number(formData.stock),
+        imageUrl: formData.imageUrl,
+        playability: Number(formData.playability),
+        set: formData.set
+      };
+
+      if (editingCard) {
+        setCards(prev => prev.map(c => c.id === currentCardId ? newLocalCard : c));
+      } else {
+        setCards(prev => [...prev, newLocalCard]);
+      }
+
+      // Sluit de modal af
+      setModalOpen(false);
+      setEditingCard(null);
+
+    } catch (error) {
+      console.error("Fout bij opslaan:", error);
+      alert("Er ging iets mis bij het opslaan: " + error.message);
     }
-    setModalOpen(false);
-    setEditingCard(null);
   }
 
   function handleDelete(card) {
@@ -1077,8 +1192,8 @@ function AdminInventory({ cards, setCards }) {
 
 // ── Admin: Players ───────────────────────────────────────
 function AdminPlayers({ players, acceptPlayer }) {
-  const waitlist = players.filter(p => p.status === 'Waitlist');
-  const active = players.filter(p => p.status === 'Active');
+  const waitlist = players.filter(p => p.status === 'waitlisted');
+  const active = players.filter(p => p.status === 'accepted');
 
   return (
     <div className="space-y-8">
