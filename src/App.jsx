@@ -4,7 +4,6 @@ import {
   Users, ClipboardList, LogIn, UserPlus, Shield, ChevronRight,
   CheckCircle, Clock, AlertCircle, Edit3, PlusCircle, Menu, XCircle
 } from 'lucide-react';
-import { mockOrders, mockPlayers as initialPlayers } from './data';
 import { supabase } from './lib/supabase';
 
 // ─── Playability Stars ───────────────────────────────────
@@ -36,20 +35,30 @@ function typeBadge(type) {
 }
 
 // ─── Status Badge ────────────────────────────────────────
+// ─── Status Badge ────────────────────────────────────────
 function StatusBadge({ status }) {
   const styles = {
-    'Pending': 'bg-amber-50 text-amber-700 border-amber-200',
-    'Processing': 'bg-blue-50 text-blue-700 border-blue-200',
-    'Completed': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'pending': 'bg-amber-50 text-amber-700 border-amber-200',
+    'ready_for_pickup': 'bg-blue-50 text-blue-700 border-blue-200',
+    'completed': 'bg-emerald-50 text-emerald-700 border-emerald-200',
   };
   const icons = {
-    'Pending': <Clock size={12} />,
-    'Processing': <AlertCircle size={12} />,
-    'Completed': <CheckCircle size={12} />,
+    'pending': <Clock size={12} />,
+    'ready_for_pickup': <AlertCircle size={12} />,
+    'completed': <CheckCircle size={12} />,
   };
+
+  // Maak de database-waarde mooi voor de bezoeker
+  const formatStatus = (s) => {
+    if (s === 'ready_for_pickup') return 'Klaar voor afhaal';
+    if (s === 'pending') return 'In afwachting';
+    if (s === 'completed') return 'Afgerond';
+    return s;
+  };
+
   return (
     <span className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-full border ${styles[status] || 'bg-gray-100 text-gray-600 border-gray-200'}`}>
-      {icons[status]} {status}
+      {icons[status]} {formatStatus(status)}
     </span>
   );
 }
@@ -62,8 +71,10 @@ export default function App() {
   const [cart, setCart] = useState([]);
   const [cards, setCards] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [players, setPlayers] = useState(initialPlayers);
+  const [players, setPlayers] = useState([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [orders, setOrders] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     async function fetchCards() {
@@ -118,6 +129,7 @@ export default function App() {
         setIsLoading(false);
       }
     }
+
     async function fetchPlayers() {
       try {
         const { data, error } = await supabase
@@ -139,7 +151,6 @@ export default function App() {
             // Jouw app verwacht 'Active' of 'Waitlist'
             status: profile.status
           }));
-
           setPlayers(formattedPlayers);
         }
       } catch (err) {
@@ -147,8 +158,46 @@ export default function App() {
       }
     }
 
+    async function fetchOrders() {
+      try {
+        const { data, error } = await supabase
+          .from('orders')
+          .select(`
+            id,
+            status,
+            created_at,
+            profiles ( first_name, last_name ),
+            order_items (
+              amount,
+              cards ( name )
+            )
+          `)
+          .order('created_at', { ascending: false }); // Nieuwste bovenaan
+
+        if (error) {
+          console.error("Fout bij ophalen bestellingen:", error.message);
+          return;
+        }
+
+        if (data) {
+          const formattedOrders = data.map(o => ({
+            id: o.id,
+            // Plak voor- en achternaam aan elkaar
+            user: o.profiles ? `${o.profiles.first_name} ${o.profiles.last_name}`.trim() : 'Onbekende Speler',
+            status: o.status,
+            // Maak een nette string van de items (bijv: "Charizard ex x2")
+            items: o.order_items.map(item => `${item.cards?.name || 'Onbekende kaart'} x${item.amount}`)
+          }));
+          setOrders(formattedOrders);
+        }
+      } catch (err) {
+        console.error("Onverwachte fout bij bestellingen:", err);
+      }
+    }
+
     fetchCards();
-    fetchPlayers()
+    fetchPlayers();
+    fetchOrders();
   }, []);
 
   // Cart helpers
@@ -174,6 +223,56 @@ export default function App() {
       }
       return prev.filter(i => i.id !== cardId);
     });
+  }
+
+  async function handlePlaceOrder() {
+    if (cart.length === 0) return;
+
+    // VERVANG DE OUDE CHECK DOOR DEZE:
+    if (!currentUser || !currentUser.profile) {
+      alert("Je moet ingelogd zijn om een bestelling te plaatsen.");
+      // Optioneel: stuur ze naar de inlogpagina
+      setView('login');
+      return;
+    }
+
+    // Gebruik het ID van de ingelogde speler!
+    const activeUserId = currentUser.profile.id;
+
+    try {
+      // 1. Maak de Order aan (gebruik activeUserId)
+      const { data: orderData, error: orderError } = await supabase
+        .from('orders')
+        .insert([{ user_id: activeUserId, status: 'pending' }])
+        .select()
+        .single();
+
+      if (orderError) throw orderError;
+
+      // 2. Maak de Order Items klaar om in één keer op te slaan
+      const itemsToInsert = cart.map(item => ({
+        order_id: orderData.id,
+        card_id: item.id,
+        amount: item.qty
+      }));
+
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(itemsToInsert);
+
+      if (itemsError) throw itemsError;
+
+      // 3. Succes! Maak de winkelwagen leeg en geef een seintje
+      setCart([]);
+      alert(`Bestelling succesvol geplaatst! Jouw order ID is: ${orderData.id}`);
+
+      // Optioneel: Je zou hier de orders lokaal kunnen updaten,
+      // of de pagina laten herladen. Voor nu is dit voldoende.
+
+    } catch (error) {
+      console.error("Fout bij plaatsen bestelling:", error);
+      alert("Er is iets misgegaan bij het plaatsen van je bestelling.");
+    }
   }
 
   function removeAllFromCart(cardId) {
@@ -276,16 +375,16 @@ export default function App() {
       {/* ── MAIN CONTENT ───────────────────────────────── */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {view === 'landing' && <LandingPage onNavigate={setView} />}
-        {view === 'login' && <LoginPage onNavigate={setView} />}
-        {view === 'register' && <RegisterPage />}
+        {view === 'login' && <LoginPage onNavigate={setView} onLogin={setCurrentUser} />}
+        {view === 'register' && <RegisterPage onNavigate={setView} />}
         {view === 'shop' && (
           <ShopView cards={cards} addToCart={addToCart} removeFromCart={removeFromCart} getCartQty={getCartQty} />
         )}
         {view === 'cart' && (
-          <CartView cart={cart} removeFromCart={removeFromCart} removeAllFromCart={removeAllFromCart} addToCart={addToCart} onNavigate={setView} setCart={setCart} />
+          <CartView cart={cart} removeFromCart={removeFromCart} removeAllFromCart={removeAllFromCart} addToCart={addToCart} onNavigate={setView} setCart={setCart} onPlaceOrder={handlePlaceOrder} />
         )}
         {view === 'admin' && (
-          <AdminDashboard cards={cards} setCards={setCards} players={players} acceptPlayer={acceptPlayer} />
+          <AdminDashboard cards={cards} setCards={setCards} players={players} acceptPlayer={acceptPlayer} orders={orders} />
         )}
       </main>
 
@@ -365,13 +464,66 @@ function LandingPage({ onNavigate }) {
 // ═══════════════════════════════════════════════════════════
 // LOGIN PAGE
 // ═══════════════════════════════════════════════════════════
-function LoginPage({ onNavigate }) {
+function LoginPage({ onNavigate, onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  function handleLogin(role) {
-    alert(`[Mockup] Logging in as ${role} with ${email || '(no email)'}`);
-    onNavigate(role === 'Admin' ? 'admin' : 'shop');
+  // 1. De échte inlogfunctie voor spelers
+  async function handlePlayerLogin(e) {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      // Stap A: Check credentials bij Supabase
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
+      });
+
+      if (authError) throw authError;
+
+      // Stap B: Haal het bijbehorende profiel op uit jouw profiles tabel
+      if (authData.user) {
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', authData.user.id)
+          .single(); // Verwacht precies 1 rij
+
+        if (profileError) throw profileError;
+
+        // Stap C: Sla de ingelogde gebruiker (met profielgegevens) op in je App state
+        onLogin({
+          auth: authData.user,
+          profile: profileData
+        });
+
+        // Optioneel: check hier of het profiel nog op 'waitlisted' staat en weiger toegang
+        if (profileData.status === 'waitlisted') {
+          alert('Je account wacht nog op goedkeuring van de beheerder.');
+          // Log de gebruiker voor de zekerheid weer uit op de achtergrond
+          await supabase.auth.signOut();
+          onLogin(null);
+          return;
+        }
+
+        // Stap D: Stuur ze naar de shop!
+        onNavigate('shop');
+      }
+    } catch (error) {
+      console.error("Inlogfout:", error);
+      alert("Inloggen mislukt: " + (error.message === 'Invalid login credentials' ? 'Verkeerd e-mailadres of wachtwoord.' : error.message));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // 2. Tijdelijke admin bypass (voor ontwikkeling)
+  function handleAdminLogin() {
+    // In een echte app wil je hier ook gewoon inloggen en checken op `profile.is_admin === true`
+    alert('[Dev Bypass] Logging in as Admin.');
+    onNavigate('admin');
   }
 
   return (
@@ -382,11 +534,12 @@ function LoginPage({ onNavigate }) {
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
-        <div className="space-y-4">
+        <form onSubmit={handlePlayerLogin} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>
             <input
               type="email"
+              required
               value={email}
               onChange={e => setEmail(e.target.value)}
               placeholder="jouw@email.com"
@@ -397,28 +550,31 @@ function LoginPage({ onNavigate }) {
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Wachtwoord</label>
             <input
               type="password"
+              required
               value={password}
               onChange={e => setPassword(e.target.value)}
               placeholder="••••••••"
               className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm"
             />
           </div>
-        </div>
 
-        <div className="mt-8 space-y-3">
-          <button
-            onClick={() => handleLogin('Player')}
-            className="w-full py-3 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
-          >
-            <LogIn size={16} /> Log in als Speler
-          </button>
-          <button
-            onClick={() => handleLogin('Admin')}
-            className="w-full py-3 bg-white text-gray-900 font-semibold rounded-xl border border-gray-300 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
-          >
-            <Shield size={16} /> Log in als Admin
-          </button>
-        </div>
+          <div className="mt-8 space-y-3">
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <LogIn size={16} /> {loading ? 'Bezig met inloggen...' : 'Log in als Speler'}
+            </button>
+            <button
+              type="button" // Type="button" voorkomt dat dit formulier verstuurt
+              onClick={handleAdminLogin}
+              className="w-full py-3 bg-white text-gray-900 font-semibold rounded-xl border border-gray-300 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+            >
+              <Shield size={16} /> Log in als Admin
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -427,12 +583,65 @@ function LoginPage({ onNavigate }) {
 // ═══════════════════════════════════════════════════════════
 // REGISTER PAGE
 // ═══════════════════════════════════════════════════════════
-function RegisterPage() {
+// Vergeet niet om supabase door te geven aan onNavigate of hem globaal te gebruiken als je hem bovenin al importeert!
+function RegisterPage({ onNavigate }) {
   const [isNew, setIsNew] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    password: '',
+    playerId: ''
+  });
 
-  function handleSubmit(e) {
+  function handleChange(field, value) {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault();
-    alert('[Mockup] Registration submitted!');
+    setLoading(true);
+
+    try {
+      // 1. Maak het account aan in Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (authError) throw authError;
+
+      // 2. Als Auth gelukt is, sla het profiel op in de 'profiles' tabel
+      if (authData.user) {
+        const profilePayload = {
+          id: authData.user.id, // Dit koppelt je profiel aan de login!
+          first_name: formData.firstName,
+          last_name: formData.lastName,
+          email: formData.email,
+          phone_number: formData.phone,
+          is_new_player: isNew,
+          player_id: isNew || !formData.playerId ? null : Number(formData.playerId),
+          status: 'waitlisted', // Standaard status bij aanmelding
+          is_admin: false
+        };
+
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([profilePayload]);
+
+        if (profileError) throw profileError;
+
+        alert('Registratie succesvol! Je kunt nu inloggen.');
+        onNavigate('login');
+      }
+    } catch (error) {
+      console.error("Fout bij registratie:", error);
+      alert("Er ging iets mis: " + error.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -446,48 +655,32 @@ function RegisterPage() {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Voornaam</label>
-            <input type="text" placeholder="Dennis" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+            <input required type="text" value={formData.firstName} onChange={e => handleChange('firstName', e.target.value)} placeholder="Dennis" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Achternaam</label>
-            <input type="text" placeholder="Mampaey" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+            <input required type="text" value={formData.lastName} onChange={e => handleChange('lastName', e.target.value)} placeholder="Mampaey" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
           </div>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>
-          <input type="email" placeholder="bigboss@tcgshop.eu" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+          <input required type="email" value={formData.email} onChange={e => handleChange('email', e.target.value)} placeholder="bigboss@tcgshop.eu" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Telefoonnummer</label>
-          <input type="tel" placeholder="+32 4XX XX XX XX" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+          <input type="tel" value={formData.phone} onChange={e => handleChange('phone', e.target.value)} placeholder="+32 4XX XX XX XX" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Wachtwoord</label>
-          <input type="password" placeholder="Min. 8 tekens" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+          <input required type="password" minLength={6} value={formData.password} onChange={e => handleChange('password', e.target.value)} placeholder="Min. 6 tekens" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
         </div>
 
         {/* New Player Toggle */}
         <div className="pt-2">
           <label className="block text-sm font-medium text-gray-700 mb-3">Nieuwe speler?</label>
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setIsNew(true)}
-              className={`flex-1 py-2.5 text-sm font-medium rounded-xl border transition-all ${
-                isNew ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              Ja, ik ben nieuw
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsNew(false)}
-              className={`flex-1 py-2.5 text-sm font-medium rounded-xl border transition-all ${
-                !isNew ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-              }`}
-            >
-              Nee, bestaande speler
-            </button>
+            <button type="button" onClick={() => setIsNew(true)} className={`flex-1 py-2.5 text-sm font-medium rounded-xl border transition-all ${isNew ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>Ja, ik ben nieuw</button>
+            <button type="button" onClick={() => setIsNew(false)} className={`flex-1 py-2.5 text-sm font-medium rounded-xl border transition-all ${!isNew ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}>Nee, bestaande speler</button>
           </div>
         </div>
 
@@ -495,15 +688,12 @@ function RegisterPage() {
         {!isNew && (
           <div className="animate-fadeIn">
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Speler ID</label>
-            <input type="text" placeholder="XXXXXXX" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
+            <input required={!isNew} type="number" value={formData.playerId} onChange={e => handleChange('playerId', e.target.value)} placeholder="XXXXXXX" className="w-full px-4 py-2.5 rounded-xl border border-gray-300 focus:border-gray-900 focus:ring-1 focus:ring-gray-900 outline-none transition-all text-sm" />
           </div>
         )}
 
-        <button
-          type="submit"
-          className="w-full mt-4 py-3 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors"
-        >
-          Registreer
+        <button disabled={loading} type="submit" className="w-full mt-4 py-3 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors disabled:opacity-50">
+          {loading ? 'Bezig met registreren...' : 'Registreer'}
         </button>
       </form>
     </div>
@@ -666,7 +856,7 @@ function ShopView({ cards, addToCart, removeFromCart, getCartQty }) {
 // ═══════════════════════════════════════════════════════════
 // CART VIEW
 // ═══════════════════════════════════════════════════════════
-function CartView({ cart, removeFromCart, removeAllFromCart, addToCart, onNavigate, setCart }) {
+function CartView({ cart, removeFromCart, removeAllFromCart, addToCart, onNavigate, setCart, onPlaceOrder }) {
   if (cart.length === 0) {
     return (
       <div className="text-center py-24">
@@ -746,13 +936,10 @@ function CartView({ cart, removeFromCart, removeAllFromCart, addToCart, onNaviga
           <span className="text-xl font-bold">{totalItems}</span>
         </div>
         <button
-          onClick={() => {
-            alert(`[Mockup] Bestelling geplaatst! ${totalItems} kaarten aangevraagd.`);
-            setCart([]);
-          }}
-          className="w-full py-3.5 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
+            onClick={onPlaceOrder}
+            className="w-full py-3.5 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
         >
-          <CheckCircle size={18} /> Bestelling Bevestigen
+            <CheckCircle size={18} /> Bestelling Bevestigen
         </button>
         <p className="text-center text-xs text-gray-400 mt-3">Je wordt bericht wanneer je bestelling klaar is voor afhaling</p>
       </div>
@@ -763,10 +950,10 @@ function CartView({ cart, removeFromCart, removeAllFromCart, addToCart, onNaviga
 // ═══════════════════════════════════════════════════════════
 // ADMIN DASHBOARD
 // ═══════════════════════════════════════════════════════════
-function AdminDashboard({ cards, setCards, players, acceptPlayer }) {
+function AdminDashboard({ cards, setCards, players, acceptPlayer, orders }) {
   const [activeTab, setActiveTab] = useState('inventory');
 
-  const pendingOrders = mockOrders.filter(o => o.status !== 'Completed').length;
+  const pendingOrders = orders.filter(o => o.status !== 'completed').length;
   const waitlistPlayers = players.filter(p => p.status === 'waitlisted').length;
 
   const tabs = [
@@ -817,7 +1004,7 @@ function AdminDashboard({ cards, setCards, players, acceptPlayer }) {
       {/* Tab Content */}
       {activeTab === 'inventory' && <AdminInventory cards={cards} setCards={setCards} />}
       {activeTab === 'players' && <AdminPlayers players={players} acceptPlayer={acceptPlayer} />}
-      {activeTab === 'orders' && <AdminOrders />}
+      {activeTab === 'orders' && <AdminOrders orders={orders} />}
     </div>
   );
 }
@@ -1098,9 +1285,32 @@ function AdminInventory({ cards, setCards }) {
     }
   }
 
-  function handleDelete(card) {
+  async function handleDelete(card) {
     if (confirm(`Weet je zeker dat je "${card.name}" wilt verwijderen?`)) {
-      setCards(prev => prev.filter(c => c.id !== card.id));
+      try {
+        // 1. Verwijder eerst de koppeling(en) in de tussentabel
+        const { error: linkError } = await supabase
+          .from('card_sets')
+          .delete()
+          .eq('card_id', card.id);
+
+        if (linkError) throw linkError;
+
+        // 2. Verwijder daarna pas de kaart zelf
+        const { error: cardError } = await supabase
+          .from('cards')
+          .delete()
+          .eq('id', card.id);
+
+        if (cardError) throw cardError;
+
+        // 3. Update de interface
+        setCards(prev => prev.filter(c => c.id !== card.id));
+
+      } catch (error) {
+        console.error("Fout bij verwijderen:", error);
+        alert("Er ging iets mis bij het verwijderen: " + error.message);
+      }
     }
   }
 
@@ -1260,10 +1470,10 @@ function AdminPlayers({ players, acceptPlayer }) {
 }
 
 // ── Admin: Orders ────────────────────────────────────────
-function AdminOrders() {
+function AdminOrders({ orders }) {
   return (
     <div>
-      <h2 className="text-lg font-bold mb-4">{mockOrders.length} bestellingen</h2>
+      <h2 className="text-lg font-bold mb-4">{orders.length} bestellingen</h2>
       <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -1276,9 +1486,13 @@ function AdminOrders() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {mockOrders.map(order => (
+              {/* Vervang mockOrders door orders */}
+              {orders.map(order => (
                 <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="py-3 px-4 font-mono text-xs text-gray-600">{order.id}</td>
+                  {/* Omdat een Supabase ID een heel lange code is (UUID), knippen we hem af op 8 tekens voor het overzicht */}
+                  <td className="py-3 px-4 font-mono text-xs text-gray-600" title={order.id}>
+                    {order.id.slice(0, 8)}...
+                  </td>
                   <td className="py-3 px-4 font-semibold text-gray-900">{order.user}</td>
                   <td className="py-3 px-4 text-gray-500 text-xs">{order.items.join(', ')}</td>
                   <td className="py-3 px-4"><StatusBadge status={order.status} /></td>
