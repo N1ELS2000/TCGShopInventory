@@ -35,7 +35,6 @@ function typeBadge(type) {
 }
 
 // ─── Status Badge ────────────────────────────────────────
-// ─── Status Badge ────────────────────────────────────────
 function StatusBadge({ status }) {
   const styles = {
     'pending': 'bg-amber-50 text-amber-700 border-amber-200',
@@ -225,6 +224,17 @@ export default function App() {
     });
   }
 
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+      setCurrentUser(null);
+      setCart([]); // Maak ook meteen het winkelmandje leeg voor de veiligheid
+      setView('landing'); // Stuur ze terug naar de homepagina
+    } catch (error) {
+      console.error("Fout bij uitloggen:", error);
+    }
+  }
+
   async function handlePlaceOrder() {
     if (cart.length === 0) return;
 
@@ -289,14 +299,31 @@ export default function App() {
     setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, status: 'accepted' } : p));
   }
 
-  const navItems = [
-    { key: 'landing', label: 'Landing' },
-    { key: 'login', label: 'Login' },
-    { key: 'register', label: 'Register' },
-    { key: 'shop', label: 'Player Shop' },
-    { key: 'cart', label: 'Cart' },
-    { key: 'admin', label: 'Admin' },
-  ];
+  // Bepaal welke menu-items zichtbaar zijn op basis van de ingelogde gebruiker
+  const navItems = [];
+
+  if (!currentUser) {
+    // NIET INGELOGD (Gasten)
+    navItems.push({ key: 'landing', label: 'Landing' });
+    navItems.push({ key: 'login', label: 'Log In' });
+    navItems.push({ key: 'register', label: 'Registreer' });
+  } else {
+    // WEL INGELOGD
+    navItems.push({ key: 'landing', label: 'Landing' }); // Soms handig om terug te kunnen
+
+    // Alleen geaccepteerde spelers (of admins) zien de shop
+    if (currentUser.profile.status === 'accepted' || currentUser.profile.is_admin) {
+      navItems.push({ key: 'shop', label: 'Player Shop' });
+    }
+
+    // Alleen admins zien het admin paneel
+    if (currentUser.profile.is_admin) {
+      navItems.push({ key: 'admin', label: 'Admin Dashboard' });
+    }
+
+    // Uitlogknop voor iedereen die is ingelogd
+    navItems.push({ key: 'logout', label: 'Uitloggen' });
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans antialiased">
@@ -317,10 +344,18 @@ export default function App() {
               {navItems.map(item => (
                 <button
                   key={item.key}
-                  onClick={() => setView(item.key)}
+                  onClick={() => {
+                    if (item.key === 'logout') {
+                      handleLogout();
+                    } else {
+                      setView(item.key);
+                    }
+                  }}
                   className={`px-3.5 py-2 text-sm font-medium rounded-lg transition-all ${
-                    view === item.key
+                    view === item.key && item.key !== 'logout'
                       ? 'bg-gray-900 text-white'
+                      : item.key === 'logout'
+                      ? 'text-red-600 hover:bg-red-50' // Maak de logout knop subtiel rood
                       : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                   }`}
                 >
@@ -331,17 +366,21 @@ export default function App() {
 
             {/* Cart icon + Mobile menu toggle */}
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setView('cart')}
-                className="relative p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
-              >
-                <ShoppingCart size={20} />
-                {cartCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 text-white text-[10px] font-bold flex items-center justify-center rounded-full">
-                    {cartCount}
-                  </span>
-                )}
-              </button>
+              {/* Toon de cart ALLEEN als er een geaccepteerde speler of admin is ingelogd */}
+              {currentUser && (currentUser.profile.status === 'accepted' || currentUser.profile.is_admin) && (
+                <button
+                  onClick={() => setView('cart')}
+                  className="relative p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
+                >
+                  <ShoppingCart size={20} />
+                  {cartCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 text-white text-[10px] font-bold flex items-center justify-center rounded-full">
+                      {cartCount}
+                    </span>
+                  )}
+                </button>
+              )}
+
               <button
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
                 className="md:hidden p-2 rounded-lg text-gray-600 hover:bg-gray-100"
@@ -357,10 +396,19 @@ export default function App() {
               {navItems.map(item => (
                 <button
                   key={item.key}
-                  onClick={() => { setView(item.key); setMobileMenuOpen(false); }}
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    if (item.key === 'logout') {
+                      handleLogout();
+                    } else {
+                      setView(item.key);
+                    }
+                  }}
                   className={`block w-full text-left px-3 py-2 text-sm font-medium rounded-lg transition-all ${
-                    view === item.key
+                    view === item.key && item.key !== 'logout'
                       ? 'bg-gray-900 text-white'
+                      : item.key === 'logout'
+                      ? 'text-red-600 hover:bg-red-50'
                       : 'text-gray-600 hover:bg-gray-100'
                   }`}
                 >
