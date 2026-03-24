@@ -163,6 +163,7 @@ export default function App() {
           .from('orders')
           .select(`
             id,
+            order_number,
             status,
             created_at,
             profiles ( first_name, last_name ),
@@ -180,7 +181,7 @@ export default function App() {
 
         if (data) {
           const formattedOrders = data.map(o => ({
-            id: o.id,
+            id: o.id, displayId: `ORD-${String(o.order_number || 0).padStart(3, '0')}`,
             // Plak voor- en achternaam aan elkaar
             user: o.profiles ? `${o.profiles.first_name} ${o.profiles.last_name}`.trim() : 'Onbekende Speler',
             status: o.status,
@@ -238,7 +239,6 @@ export default function App() {
   async function handlePlaceOrder() {
     if (cart.length === 0) return;
 
-    // VERVANG DE OUDE CHECK DOOR DEZE:
     if (!currentUser || !currentUser.profile) {
       alert("Je moet ingelogd zijn om een bestelling te plaatsen.");
       // Optioneel: stuur ze naar de inlogpagina
@@ -271,6 +271,19 @@ export default function App() {
         .insert(itemsToInsert);
 
       if (itemsError) throw itemsError;
+      // Maak het mooie ID aan voor de melding en de tabel
+      const mooieOrderRef = `ORD-${String(orderData.order_number).padStart(3, '0')}`;
+
+      // Voeg de nieuwe bestelling direct toe aan de lijst die admins zien
+      const newOrderForState = {
+        id: orderData.id,
+        displayId: mooieOrderRef, // Gebruik hier het nieuwe ID
+        user: `${currentUser.profile.first_name} ${currentUser.profile.last_name}`.trim(),
+        status: orderData.status,
+        items: cart.map(item => `${item.name} x${item.qty}`)
+      };
+
+      setOrders(prevOrders => [newOrderForState, ...prevOrders]);
 
       // 3. Succes! Maak de winkelwagen leeg en geef een seintje
       setCart([]);
@@ -278,6 +291,7 @@ export default function App() {
 
       // Optioneel: Je zou hier de orders lokaal kunnen updaten,
       // of de pagina laten herladen. Voor nu is dit voldoende.
+        // TODO - update orders in state
 
     } catch (error) {
       console.error("Fout bij plaatsen bestelling:", error);
@@ -294,9 +308,42 @@ export default function App() {
     return item ? item.qty : 0;
   }
 
-  // Accept a waitlist player
-  function acceptPlayer(playerId) {
-    setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, status: 'accepted' } : p));
+  async function updatePlayerStatus(playerId, newStatus) {
+    try {
+      // 1. Update de status in Supabase
+      const { error } = await supabase
+        .from('profiles')
+        .update({ status: newStatus })
+        .eq('id', playerId);
+
+      if (error) throw error;
+
+      // 2. Update de lokale state zodat de UI direct mee verandert
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, status: newStatus } : p));
+
+    } catch (error) {
+      console.error("Fout bij updaten speler status:", error);
+      alert("Er ging iets mis bij het updaten van de speler: " + error.message);
+    }
+  }
+
+  async function updateOrderStatus(orderId, newStatus) {
+    try {
+      // 1. Update de status in Supabase
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: newStatus })
+        .eq('id', orderId);
+
+      if (error) throw error;
+
+      // 2. Update de lokale state zodat de UI direct mee verandert
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+
+    } catch (error) {
+      console.error("Fout bij updaten order status:", error);
+      alert("Er ging iets mis bij het updaten van de bestelling: " + error.message);
+    }
   }
 
   // Bepaal welke menu-items zichtbaar zijn op basis van de ingelogde gebruiker
@@ -336,7 +383,7 @@ export default function App() {
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shadow-sm">
                 <Package size={18} className="text-white" />
               </div>
-              <span className="text-lg font-bold tracking-tight hidden sm:block">TCGShopInventory</span>
+              <span className="text-lg font-bold tracking-tight hidden sm:block">TCGShopBulk</span>
             </button>
 
             {/* Desktop nav */}
@@ -432,14 +479,14 @@ export default function App() {
           <CartView cart={cart} removeFromCart={removeFromCart} removeAllFromCart={removeAllFromCart} addToCart={addToCart} onNavigate={setView} setCart={setCart} onPlaceOrder={handlePlaceOrder} />
         )}
         {view === 'admin' && (
-          <AdminDashboard cards={cards} setCards={setCards} players={players} acceptPlayer={acceptPlayer} orders={orders} />
+          <AdminDashboard cards={cards} setCards={setCards} players={players} updatePlayerStatus={updatePlayerStatus} orders={orders} updateOrderStatus={updateOrderStatus} />
         )}
       </main>
 
       {/* ── FOOTER ─────────────────────────────────────── */}
       <footer className="border-t border-gray-200 bg-white mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <p className="text-sm text-gray-500">© 2026 TCGShopInventory — Van spelers, voor spelers</p>
+          <p className="text-sm text-gray-500">© 2026 TCGShopBulk — Van spelers, voor spelers</p>
           <p className="text-xs text-gray-400">Lokaal afhalen in Boom</p>
         </div>
       </footer>
@@ -472,7 +519,7 @@ function LandingPage({ onNavigate }) {
           </span>
         </h1>
         <p className="mt-6 text-lg text-gray-500 max-w-xl mx-auto leading-relaxed">
-          TCGShopInventory is een community platform waar spelers kaarten doneren en claimen. Zoek wat je nodig hebt, voeg toe aan je lijst en haal lokaal af.
+          TCGShopBulk is een community platform waar spelers kaarten doneren en claimen. Zoek wat je nodig hebt, voeg toe aan je lijst en haal lokaal af.
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3">
           <button
@@ -557,7 +604,11 @@ function LoginPage({ onNavigate, onLogin }) {
         }
 
         // Stap D: Stuur ze naar de shop!
-        onNavigate('shop');
+        if (profileData.is_admin) {
+          onNavigate('admin');
+        } else {
+          onNavigate('shop');
+        }
       }
     } catch (error) {
       console.error("Inlogfout:", error);
@@ -565,13 +616,6 @@ function LoginPage({ onNavigate, onLogin }) {
     } finally {
       setLoading(false);
     }
-  }
-
-  // 2. Tijdelijke admin bypass (voor ontwikkeling)
-  function handleAdminLogin() {
-    // In een echte app wil je hier ook gewoon inloggen en checken op `profile.is_admin === true`
-    alert('[Dev Bypass] Logging in as Admin.');
-    onNavigate('admin');
   }
 
   return (
@@ -612,14 +656,7 @@ function LoginPage({ onNavigate, onLogin }) {
               disabled={loading}
               className="w-full py-3 bg-gray-900 text-white font-semibold rounded-xl hover:bg-gray-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              <LogIn size={16} /> {loading ? 'Bezig met inloggen...' : 'Log in als Speler'}
-            </button>
-            <button
-              type="button" // Type="button" voorkomt dat dit formulier verstuurt
-              onClick={handleAdminLogin}
-              className="w-full py-3 bg-white text-gray-900 font-semibold rounded-xl border border-gray-300 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
-            >
-              <Shield size={16} /> Log in als Admin
+              <LogIn size={16} /> {loading ? 'Bezig met inloggen...' : 'Log in'}
             </button>
           </div>
         </form>
@@ -998,7 +1035,7 @@ function CartView({ cart, removeFromCart, removeAllFromCart, addToCart, onNaviga
 // ═══════════════════════════════════════════════════════════
 // ADMIN DASHBOARD
 // ═══════════════════════════════════════════════════════════
-function AdminDashboard({ cards, setCards, players, acceptPlayer, orders }) {
+function AdminDashboard({ cards, setCards, players, updatePlayerStatus, orders, updateOrderStatus }) {
   const [activeTab, setActiveTab] = useState('inventory');
 
   const pendingOrders = orders.filter(o => o.status !== 'completed').length;
@@ -1051,8 +1088,8 @@ function AdminDashboard({ cards, setCards, players, acceptPlayer, orders }) {
 
       {/* Tab Content */}
       {activeTab === 'inventory' && <AdminInventory cards={cards} setCards={setCards} />}
-      {activeTab === 'players' && <AdminPlayers players={players} acceptPlayer={acceptPlayer} />}
-      {activeTab === 'orders' && <AdminOrders orders={orders} />}
+      {activeTab === 'players' && <AdminPlayers players={players} updatePlayerStatus={updatePlayerStatus} />}
+      {activeTab === 'orders' && <AdminOrders orders={orders} updateOrderStatus={updateOrderStatus} />}
     </div>
   );
 }
@@ -1449,9 +1486,27 @@ function AdminInventory({ cards, setCards }) {
 }
 
 // ── Admin: Players ───────────────────────────────────────
-function AdminPlayers({ players, acceptPlayer }) {
-  const waitlist = players.filter(p => p.status === 'waitlisted');
+function AdminPlayers({ players, updatePlayerStatus }) {
+  // We splitsen ze op: alles wat 'accepted' is gaat naar Actief, de rest is wachtlijst/nieuw
+  const waitlist = players.filter(p => p.status !== 'accepted');
   const active = players.filter(p => p.status === 'accepted');
+
+  // Herbruikbare dropdown die eruitziet als een status-badge!
+  const StatusDropdown = ({ player }) => (
+    <select
+      value={player.status}
+      onChange={(e) => updatePlayerStatus(player.id, e.target.value)}
+      className={`text-xs font-bold rounded-full px-3 py-1.5 border outline-none cursor-pointer transition-colors ${
+        player.status === 'accepted' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+        player.status === 'waitlisted' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+        'bg-gray-50 text-gray-600 border-gray-300' // pending
+      }`}
+    >
+      <option value="pending">Pending</option>
+      <option value="waitlisted">Waitlisted</option>
+      <option value="accepted">Accepted (Actief)</option>
+    </select>
+  );
 
   return (
     <div className="space-y-8">
@@ -1471,17 +1526,12 @@ function AdminPlayers({ players, acceptPlayer }) {
         ) : (
           <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
             {waitlist.map(player => (
-              <div key={player.id} className="flex items-center justify-between p-4">
+              <div key={player.id} className="flex items-center justify-between p-4 hover:bg-gray-50 transition-colors">
                 <div>
                   <p className="font-semibold text-gray-900">{player.name}</p>
                   <p className="text-xs text-gray-400">{player.email} · {player.id}</p>
                 </div>
-                <button
-                  onClick={() => acceptPlayer(player.id)}
-                  className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-xl hover:bg-emerald-700 transition-colors flex items-center gap-1.5"
-                >
-                  <CheckCircle size={14} /> Accepteren
-                </button>
+                <StatusDropdown player={player} />
               </div>
             ))}
           </div>
@@ -1496,9 +1546,9 @@ function AdminPlayers({ players, acceptPlayer }) {
         </h2>
         <div className="bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
           {active.map(player => (
-            <div key={player.id} className="flex items-center justify-between p-4">
+            <div key={player.id} className="flex items-center justify-between p-4 hover:bg-gray-50 transition-colors">
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500">
+                <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-500 shrink-0">
                   {player.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
                 </div>
                 <div>
@@ -1506,9 +1556,7 @@ function AdminPlayers({ players, acceptPlayer }) {
                   <p className="text-xs text-gray-400">{player.email}</p>
                 </div>
               </div>
-              <span className="px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Actief
-              </span>
+              <StatusDropdown player={player} />
             </div>
           ))}
         </div>
@@ -1518,7 +1566,25 @@ function AdminPlayers({ players, acceptPlayer }) {
 }
 
 // ── Admin: Orders ────────────────────────────────────────
-function AdminOrders({ orders }) {
+function AdminOrders({ orders, updateOrderStatus }) {
+
+  // Herbruikbare dropdown voor de bestellingen
+  const OrderStatusDropdown = ({ order }) => (
+    <select
+      value={order.status}
+      onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+      className={`text-xs font-bold rounded-full px-3 py-1.5 border outline-none cursor-pointer transition-colors ${
+        order.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+        order.status === 'ready_for_pickup' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+        'bg-amber-50 text-amber-700 border-amber-200' // pending
+      }`}
+    >
+      <option value="pending">In afwachting</option>
+      <option value="ready_for_pickup">Klaar voor afhaal</option>
+      <option value="completed">Afgerond</option>
+    </select>
+  );
+
   return (
     <div>
       <h2 className="text-lg font-bold mb-4">{orders.length} bestellingen</h2>
@@ -1534,16 +1600,17 @@ function AdminOrders({ orders }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {/* Vervang mockOrders door orders */}
               {orders.map(order => (
                 <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                  {/* Omdat een Supabase ID een heel lange code is (UUID), knippen we hem af op 8 tekens voor het overzicht */}
-                  <td className="py-3 px-4 font-mono text-xs text-gray-600" title={order.id}>
-                    {order.id.slice(0, 8)}...
+                  <td className="py-3 px-4 font-mono text-xs text-gray-900 font-semibold" title={order.id}>
+                    {order.displayId}
                   </td>
                   <td className="py-3 px-4 font-semibold text-gray-900">{order.user}</td>
                   <td className="py-3 px-4 text-gray-500 text-xs">{order.items.join(', ')}</td>
-                  <td className="py-3 px-4"><StatusBadge status={order.status} /></td>
+                  <td className="py-3 px-4">
+                    {/* Hier gebruiken we nu de dropdown in plaats van de statische badge! */}
+                    <OrderStatusDropdown order={order} />
+                  </td>
                 </tr>
               ))}
             </tbody>
